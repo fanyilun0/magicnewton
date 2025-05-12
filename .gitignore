@@ -1,0 +1,10 @@
+token*
+header*
+proxy.txt
+
+# 忽略所有.pyc文件
+*.pyc
+
+# 忽略所有.pyo文件
+*.pyo
+

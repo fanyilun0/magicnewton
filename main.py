@@ -20,6 +20,14 @@ ENDPOINTS = {
     "user_quests": "/userQuests"
 }
 ROLL_QUEST_ID = "f56c760b-2186-40cb-9cbc-3af4a3dc20e2"
+MINESWEEPER_QUEST_ID = "44ec9674-6125-4f88-9e18-8d6d6be8f156"
+ONE_TIME_QUEST_ID = [
+    "Follow X",
+    "Follow Discord",
+    "Follow Tiktok",
+    "Follow Instagram",
+    "Connect Guild",
+]
 MIN_TASK_DELAY = 7  # seconds
 MAX_TASK_DELAY = 14  # seconds
 MIN_LOOP_DELAY = 24 * 60 * 60  # 24 hours in seconds
@@ -261,7 +269,7 @@ class APIClient:
         data = {
             "questId": ROLL_QUEST_ID,
             "metadata": {
-                "action": "ROLL"
+                #"action": "ROLL"
             }
         }
         return self.make_request("/userQuests", method="POST", token=token, data=data)
@@ -467,6 +475,7 @@ class MagicNewtonAutomation:
                         proxies=proxies
                     )
 
+# TODO: 完成一次性任务
                     # Process quests
                     self.process_quests(quests_data, user_quests_data, token)
 
@@ -485,7 +494,7 @@ class MagicNewtonAutomation:
                     countdown_timer(task_delay)
 
                 # Update proxy file to remove used proxies after all accounts are processed
-                self.proxy_manager.update_proxy_file()
+                # self.proxy_manager.update_proxy_file()
                 
                 # Calculate next run time
                 loop_delay = get_random_delay(MIN_LOOP_DELAY, MAX_LOOP_DELAY)
@@ -498,7 +507,7 @@ class MagicNewtonAutomation:
                 # Save headers before exiting
                 self.api_client.save_headers()
                 # Update proxy file to remove used proxies
-                self.proxy_manager.update_proxy_file()
+                #íself.proxy_manager.update_proxy_file()
                 break
             except Exception as e:
                 log_error(f"Unexpected error occurred: {str(e)}")
