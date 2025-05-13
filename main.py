@@ -4,10 +4,12 @@ import time
 import requests
 import os
 import sys
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from colorama import Fore, Style, init
 from datetime import datetime, timezone, timedelta
 from fake_useragent import UserAgent
+from log import log_info, log_success, log_warning, log_error, countdown_timer, format_separator
+from minesweeper_solver import MinesweeperSolver
 
 # Initialize colorama
 init(autoreset=True)
@@ -27,11 +29,12 @@ ONE_TIME_QUEST_ID = [
     "Follow Tiktok",
     "Follow Instagram",
     "Connect Guild",
+    "Connect your Guild"
 ]
 MIN_TASK_DELAY = 7  # seconds
-MAX_TASK_DELAY = 14  # seconds
-MIN_LOOP_DELAY = 24 * 60 * 60  # 24 hours in seconds
-MAX_LOOP_DELAY = (24 * 60 * 60) + (77 * 60)  # 24 hours + 77 minutes in seconds
+MAX_TASK_DELAY = 40  # seconds
+MIN_LOOP_DELAY = 24 * 60 * 60 / 2  # 24 hours in seconds
+MAX_LOOP_DELAY = (24 * 60 * 60) / 2 + (77 * 60)  # 24 hours + 77 minutes in seconds
 
 # Rainbow Banner
 def rainbow_banner():
@@ -57,29 +60,8 @@ def rainbow_banner():
         time.sleep(0.05)
 
 # Utility functions
-def log_info(message: str):
-    print(f"{Fore.CYAN}[INFO] {message}")
-
-def log_success(message: str):
-    print(f"{Fore.GREEN}[SUCCESS] {message}")
-
-def log_warning(message: str):
-    print(f"{Fore.YELLOW}[WARNING] {message}")
-
-def log_error(message: str):
-    print(f"{Fore.RED}[ERROR] {message}")
-
-def countdown_timer(seconds: int):
-    for remaining in range(seconds, 0, -1):
-        print(f"\r{Fore.YELLOW}⏱️ Waiting: {timedelta(seconds=remaining)}", end='')
-        time.sleep(1)
-    print(f"\r{Fore.GREEN}✅ Wait complete!{' ' * 20}")
-
 def get_random_delay(min_sec: int, max_sec: int) -> int:
     return random.randint(min_sec, max_sec)
-
-def format_separator(length: int = 70):
-    return f"{Fore.CYAN}{'━' * length}"
 
 # Class to manage proxies
 class ProxyManager:
@@ -273,6 +255,30 @@ class APIClient:
             }
         }
         return self.make_request("/userQuests", method="POST", token=token, data=data)
+        
+    def start_minesweeper_game(self, token: str = None, difficulty: str = "Easy", proxies: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Start a minesweeper game"""
+        data = {
+            "questId": MINESWEEPER_QUEST_ID,
+            "metadata": {
+                "action": "START",
+                "difficulty": difficulty
+            }
+        }
+        return self.make_request("/userQuests", method="POST", token=token, data=data, proxies=proxies)
+        
+    def click_minesweeper_tile(self, token: str, user_quest_id: str, x: int, y: int, proxies: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Click a tile in the minesweeper game"""
+        data = {
+            "questId": MINESWEEPER_QUEST_ID,
+            "metadata": {
+                "action": "CLICK",
+                "userQuestId": user_quest_id,
+                "x": x,
+                "y": y
+            }
+        }
+        return self.make_request("/userQuests", method="POST", token=token, data=data, proxies=proxies)
 
 # Main class for automation
 class MagicNewtonAutomation:
@@ -468,6 +474,145 @@ class MagicNewtonAutomation:
         
         if roll_count >= max_attempts:
             log_warning(f"Reached maximum roll attempts ({max_attempts}) for token {token_display}")
+    
+    def check_minesweeper_status(self, user_quests_data: Dict[str, Any], token: str) -> int:
+        """Check how many minesweeper games have been completed today.
+        Returns the count of completed games (0-3)."""
+        
+        token_display = f"{token[:5]}...{token[-5:]}"
+        current_time = datetime.now(timezone.utc)
+        completed_count = 0
+        
+        if not user_quests_data or 'data' not in user_quests_data:
+            log_warning(f"No quest data available for token {token_display}")
+            return 0
+            
+        # Filter minesweeper quests completed today
+        for quest in user_quests_data['data']:
+            if quest['questId'] == MINESWEEPER_QUEST_ID and quest['status'] == "COMPLETED":
+                updated_at = datetime.fromisoformat(quest['updatedAt'].replace('Z', '+00:00'))
+                if updated_at.date() == current_time.date():
+                    completed_count += 1
+        
+        log_info(f"🎮 Minesweeper games completed today: {completed_count}/3 for token {token_display}")
+        return completed_count
+    
+    def play_minesweeper_game(self, token: str, proxies: Optional[Dict[str, str]] = None, difficulty: str = "Easy") -> bool:
+        """Play a single minesweeper game for the given token.
+        Returns True if game was completed successfully, False otherwise."""
+        
+        token_display = f"{token[:5]}...{token[-5:]}"
+        log_info(f"Starting a {difficulty} minesweeper game for token {token_display}")
+        
+        # Create solver instance
+        solver = MinesweeperSolver()
+        
+        # Start the game
+        start_response = self.api_client.start_minesweeper_game(token=token, difficulty=difficulty, proxies=proxies)
+        
+        if 'error' in start_response:
+            if "Quest already completed" in start_response.get("error", ""):
+                log_warning(f"Minesweeper quest already completed for token {token_display}")
+                return False
+            else:
+                log_error(f"Failed to start minesweeper game for token {token_display}: {start_response.get('error')}")
+                return False
+        
+        if not start_response or 'data' not in start_response:
+            log_error(f"Invalid start game response for token {token_display}")
+            return False
+            
+        user_quest_id = start_response['data']['id']
+        log_success(f"Successfully started minesweeper game with quest ID: {user_quest_id}")
+        
+        # Update board state
+        if '_minesweeper' in start_response['data'] and 'tiles' in start_response['data']['_minesweeper']:
+            solver.reset_board()
+            solver.update_board(start_response['data']['_minesweeper']['tiles'])
+        
+        # Play the game
+        move_count = 0
+        max_moves = 50  # Safety limit
+        
+        while move_count < max_moves:
+            move_count += 1
+            
+            try:
+                # Get next move
+                x, y = solver.get_next_move()
+                log_info(f"Move #{move_count}: Clicking tile at ({x}, {y})")
+                
+                # Click the tile
+                response = self.api_client.click_minesweeper_tile(
+                    token=token,
+                    user_quest_id=user_quest_id,
+                    x=x,
+                    y=y,
+                    proxies=proxies
+                )
+                
+                # Check for errors
+                if 'error' in response:
+                    log_error(f"Error clicking tile: {response.get('error')}")
+                    return False
+                
+                # Update board state
+                if 'data' in response and '_minesweeper' in response['data'] and 'tiles' in response['data']['_minesweeper']:
+                    solver.update_board(response['data']['_minesweeper']['tiles'])
+                    
+                    # Check if game is over
+                    game_over = response['data']['_minesweeper'].get('gameOver', False)
+                    exploded = response['data']['_minesweeper'].get('exploded', False)
+                    
+                    if game_over:
+                        if exploded:
+                            log_error(f"💣 Hit a mine! Game over after {move_count} moves.")
+                            return False
+                        else:
+                            log_success(f"🎮 Successfully completed minesweeper game in {move_count} moves!")
+                            return True
+                
+                # Small delay between moves
+                time.sleep(1)
+                
+            except Exception as e:
+                log_error(f"Error during minesweeper game: {str(e)}")
+                return False
+        
+        log_warning(f"Reached maximum moves limit ({max_moves}), stopping game")
+        return False
+    
+    def perform_minesweeper_games(self, token: str, proxies: Optional[Dict[str, str]] = None):
+        """Perform minesweeper games until daily limit is reached"""
+        token_display = f"{token[:5]}...{token[-5:]}"
+        
+        # Get user quests data to check how many games have been completed
+        user_quests_data = self.api_client.make_request(
+            ENDPOINTS['user_quests'],
+            token=token,
+            proxies=proxies
+        )
+        
+        completed_games = self.check_minesweeper_status(user_quests_data, token)
+        games_to_play = 3 - completed_games
+        
+        if games_to_play <= 0:
+            log_success(f"All daily minesweeper games already completed for token {token_display}")
+            return
+            
+        log_info(f"Need to play {games_to_play} minesweeper games for token {token_display}")
+        
+        for i in range(games_to_play):
+            log_info(f"Starting minesweeper game #{i+1} of {games_to_play}")
+            
+            # Play the game
+            success = self.play_minesweeper_game(token=token, proxies=proxies)
+            
+            # Add delay between games
+            if i < games_to_play - 1:
+                task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
+                log_info(f"Waiting {task_delay} seconds before next minesweeper game...")
+                countdown_timer(task_delay)
 
     def run_automation(self):
         while True:
@@ -549,10 +694,18 @@ class MagicNewtonAutomation:
                     else:
                         # Perform all available rolls
                         self.perform_rolls(token, proxies)
+                    
+                    # Add delay before minesweeper games
+                    task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
+                    log_info(f"Waiting {task_delay} seconds before minesweeper games...")
+                    countdown_timer(task_delay)
+                    
+                    # Perform minesweeper games
+                    self.perform_minesweeper_games(token, proxies)
 
                     # Task delay before processing next token
                     task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
-                    log_info(f"Waiting {task_delay} seconds before processing next account")
+                    log_info(f"Waiting {task_delay} seconds before processing next token")
                     countdown_timer(task_delay)
 
                 # Update proxy file to remove used proxies after all accounts are processed
@@ -583,7 +736,7 @@ if __name__ == "__main__":
     rainbow_banner()
     
     print(f"\n{Fore.GREEN}{'=' * 70}")
-    print(f"{Fore.GREEN}🚀 Starting Magic Newton Automation v1.4")
+    print(f"{Fore.GREEN}🚀 Starting Magic Newton Automation v1.5")
     print(f"{Fore.GREEN}{'=' * 70}\n")
     automation = MagicNewtonAutomation()
     automation.run_automation()
