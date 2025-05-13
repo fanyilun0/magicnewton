@@ -402,6 +402,40 @@ class MagicNewtonAutomation:
             log_info(f"🎲 Daily dice roll status: {Fore.YELLOW}NOT STARTED 🆕")
             return False
 
+    def complete_one_time_quest(self, quest_id: str, quest_title: str, token: str, proxies: Optional[Dict[str, str]] = None) -> bool:
+        """Complete a one-time quest and return True if successful, False otherwise."""
+        token_display = f"{token[:5]}...{token[-5:]}"
+        
+        log_info(f"Attempting to complete one-time quest: {quest_title} for token {token_display}")
+        
+        data = {
+            "questId": quest_id,
+            "metadata": {}
+        }
+        
+        result = self.api_client.make_request(
+            ENDPOINTS['user_quests'],
+            method="POST",
+            token=token,
+            data=data,
+            proxies=proxies
+        )
+        
+        if "error" in result:
+            if result.get("status_code") == 400 and "Quest already completed" in result.get("error", ""):
+                log_warning(f"Quest '{quest_title}' already completed for token {token_display}")
+                return True
+            else:
+                log_error(f"Failed to complete quest '{quest_title}' for token {token_display}: {result.get('error')}")
+                return False
+        
+        if not result or 'data' not in result:
+            log_error(f"Invalid response for quest '{quest_title}' completion for token {token_display}")
+            return False
+            
+        log_success(f"Successfully completed one-time quest: {quest_title} for token {token_display}")
+        return True
+
     def perform_rolls(self, token: str, proxies: Optional[Dict[str, str]] = None):
         """Perform dice rolls until no more rolls are available"""
         token_display = f"{token[:5]}...{token[-5:]}"
@@ -475,9 +509,37 @@ class MagicNewtonAutomation:
                         proxies=proxies
                     )
 
-# TODO: 完成一次性任务
                     # Process quests
                     self.process_quests(quests_data, user_quests_data, token)
+
+                    # Check and complete one-time quests
+                    if quests_data and 'data' in quests_data:
+                        available_quests = quests_data['data']
+                        user_quests = {uq['questId']: uq for uq in user_quests_data.get('data', [])} if user_quests_data and 'data' in user_quests_data else {}
+                        
+                        print(f"\n{format_separator()}")
+                        log_info(f"Checking one-time quests for token {token_display}")
+                        
+                        for quest in available_quests:
+                            quest_id = quest['id']
+                            title = quest['title']
+                            
+                            # Check if this is a one-time quest by title
+                            if any(one_time_title in title for one_time_title in ONE_TIME_QUEST_ID):
+                                # Check if quest is already completed
+                                if quest_id in user_quests and user_quests[quest_id]['status'] == "COMPLETED":
+                                    log_info(f"One-time quest '{title}' already completed")
+                                else:
+                                    # Try to complete the quest
+                                    log_info(f"Found incomplete one-time quest: {title}")
+                                    self.complete_one_time_quest(quest_id, title, token, proxies)
+                                    
+                                    # Add random delay between quest completions
+                                    task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
+                                    log_info(f"Waiting {task_delay} seconds before next action...")
+                                    countdown_timer(task_delay)
+                        
+                        print(f"{format_separator()}")
 
                     # Check if the daily dice roll is already completed
                     roll_completed = self.check_roll_status(user_quests_data, token)
