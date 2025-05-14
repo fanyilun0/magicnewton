@@ -135,6 +135,7 @@ class APIClient:
         self.header_file = header_file
         self.session = requests.Session()
         self.ua = UserAgent()
+        self.rate_limited_tokens = {}  # 跟踪被限速的token
         
         try:
             self.session_tokens = self.load_tokens()
@@ -194,14 +195,21 @@ class APIClient:
             self.save_headers()
             log_info(f"Generated new desktop user agent for token {token[:5]}...{token[-5:]}")
             
+        # 添加更多浏览器般的请求头
         return {
-            "accept": "application/json",
-            "accept-encoding": "gzip, deflate, br, zstd",
-            "accept-language": "id-ID,id;q=0.6",
+            "accept": "application/json, text/plain, */*",
+            "accept-encoding": "gzip, deflate, br",
+            "accept-language": "en-US,en;q=0.9",
             "content-type": "application/json",
             "cookie": f"__Secure-next-auth.session-token={token}",
             "origin": "https://www.magicnewton.com",
             "referer": "https://www.magicnewton.com/portal/rewards",
+            "sec-ch-ua": '"Chromium";v="116", "Not)A;Brand";v="24", "Google Chrome";v="116"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors", 
+            "sec-fetch-site": "same-origin",
             "user-agent": self.headers[token]
         }
 
@@ -212,37 +220,101 @@ class APIClient:
             
         token_display = f"{token[:5]}...{token[-5:]}"
         
-        try:
-            if method == "GET":
-                log_info(f"Sending GET request to {endpoint} with token {token_display}")
-                response = self.session.get(
-                    url,
-                    headers=self.get_headers(token),
-                    proxies=proxies,
-                    timeout=30
-                )
-            else:  # POST
-                log_info(f"Sending POST request to {endpoint} with token {token_display}")
-                response = self.session.post(
-                    url,
-                    headers=self.get_headers(token),
-                    json=data,
-                    proxies=proxies,
-                    timeout=30
-                )
-            
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 400 and "Quest already completed" in e.response.text:
-                log_success(f"Daily Dice Roll Already Claimed Today {token_display}")
-                return {"error": "Quest already completed", "status_code": 400}
+        # 检查token是否被限速
+        if token in self.rate_limited_tokens:
+            limited_until = self.rate_limited_tokens[token]
+            if datetime.now() < limited_until:
+                wait_time = int((limited_until - datetime.now()).total_seconds())
+                log_warning(f"Token {token_display} is rate limited. Waiting for {wait_time} seconds before retrying.")
+                return {"error": f"Rate limited. Try again after {wait_time} seconds", "status_code": 429}
             else:
-                log_error(f"Request failed: {str(e)}")
-            return {"error": str(e), "status_code": e.response.status_code if hasattr(e, 'response') else None}
-        except Exception as e:
-            log_error(f"Request error: {str(e)}")
-            return {"error": str(e)}
+                # 限速时间已过，从跟踪中移除
+                del self.rate_limited_tokens[token]
+        
+        # 在每个请求前添加一个小的随机延迟，模拟人类行为
+        time.sleep(random.uniform(1.0, 3.0))
+        
+        retries = 0
+        max_retries = 3  # 最大重试次数
+        retry_delay = 60  # 初始重试延迟（秒）
+        
+        while retries <= max_retries:
+            try:
+                if method == "GET":
+                    log_info(f"Sending GET request to {endpoint} with token {token_display}")
+                    response = self.session.get(
+                        url,
+                        headers=self.get_headers(token),
+                        proxies=proxies,
+                        timeout=30
+                    )
+                else:  # POST
+                    log_info(f"Sending POST request to {endpoint} with token {token_display}")
+                    response = self.session.post(
+                        url,
+                        headers=self.get_headers(token),
+                        json=data,
+                        proxies=proxies,
+                        timeout=30
+                    )
+                
+                # 处理速率限制
+                if response.status_code == 429:
+                    retries += 1
+                    # 指数退避策略
+                    current_delay = retry_delay * (2 ** retries)
+                    log_warning(f"Rate limited (429) for token {token_display}. Retry {retries}/{max_retries} after {current_delay}s")
+                    
+                    if retries > max_retries:
+                        # 将此token标记为被限速，冷却30分钟
+                        self.rate_limited_tokens[token] = datetime.now() + timedelta(minutes=30)
+                        log_error(f"Token {token_display} has been rate limited too many times. Cooling down for 30 minutes.")
+                        return {"error": f"429 Client Error: Too Many Requests for url: {url}", "status_code": 429}
+                    
+                    time.sleep(current_delay)
+                    continue
+                
+                response.raise_for_status()
+                return response.json()
+            
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    retries += 1
+                    # 指数退避策略
+                    current_delay = retry_delay * (2 ** retries)
+                    log_warning(f"Rate limited (429) for token {token_display}. Retry {retries}/{max_retries} after {current_delay}s")
+                    
+                    if retries > max_retries:
+                        # 将此token标记为被限速，冷却30分钟
+                        self.rate_limited_tokens[token] = datetime.now() + timedelta(minutes=30)
+                        log_error(f"Token {token_display} has been rate limited too many times. Cooling down for 30 minutes.")
+                        return {"error": str(e), "status_code": e.response.status_code}
+                    
+                    time.sleep(current_delay)
+                    continue
+                
+                elif e.response.status_code == 400 and "Quest already completed" in e.response.text:
+                    log_success(f"Daily Dice Roll Already Claimed Today {token_display}")
+                    return {"error": "Quest already completed", "status_code": 400}
+                else:
+                    log_error(f"Request failed: {str(e)}")
+                    return {"error": str(e), "status_code": e.response.status_code if hasattr(e, 'response') else None}
+            
+            except requests.exceptions.ConnectionError as e:
+                log_error(f"Connection error for token {token_display}: {str(e)}")
+                if retries < max_retries:
+                    retries += 1
+                    current_delay = retry_delay * (2 ** retries)
+                    log_warning(f"Connection error. Retry {retries}/{max_retries} after {current_delay}s")
+                    time.sleep(current_delay)
+                    continue
+                return {"error": str(e)}
+            
+            except Exception as e:
+                log_error(f"Request error for token {token_display}: {str(e)}")
+                return {"error": str(e)}
+        
+        return {"error": "Maximum retries exceeded"}
 
     def get_random_token(self) -> str:
         return random.choice(self.session_tokens)
@@ -642,6 +714,8 @@ class MagicNewtonAutomation:
                 if self.is_new_day(last_run_date):
                     log_success(f"New day detected! Resetting daily task counts.")
                     last_run_date = current_time
+                    # 重置APIClient中被限速的token
+                    self.api_client.rate_limited_tokens.clear()
                 
                 log_success(f"Current Time: {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
                 
@@ -652,6 +726,18 @@ class MagicNewtonAutomation:
                 
                 for token in tokens_to_process:
                     token_display = f"{token[:5]}...{token[-5:]}"
+                    
+                    # 跳过被限速的token
+                    if token in self.api_client.rate_limited_tokens:
+                        limited_until = self.api_client.rate_limited_tokens[token]
+                        if datetime.now() < limited_until:
+                            wait_time = int((limited_until - datetime.now()).total_seconds())
+                            log_warning(f"Skipping rate-limited token {token_display} (cooling down for {wait_time} more seconds)")
+                            continue
+                        else:
+                            # 限速已过期，从跟踪中移除
+                            del self.api_client.rate_limited_tokens[token]
+                    
                     log_info(f"Processing token: {token_display}")
 
                     # Get a proxy for this request

@@ -1,5 +1,5 @@
 from colorama import Fore, Style, init
-from datetime import timedelta
+from datetime import timedelta, datetime
 import time
 
 # Initialize colorama
@@ -7,16 +7,16 @@ init(autoreset=True)
 
 # Log functions
 def log_info(message: str):
-    print(f"{Fore.CYAN}[INFO] {message}")
+    print(f"{Fore.CYAN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [INFO] {message}")
 
 def log_success(message: str):
-    print(f"{Fore.GREEN}[SUCCESS] {message}")
+    print(f"{Fore.GREEN}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [SUCCESS] {message}")
 
 def log_warning(message: str):
-    print(f"{Fore.YELLOW}[WARNING] {message}")
+    print(f"{Fore.YELLOW}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [WARNING] {message}")
 
 def log_error(message: str):
-    print(f"{Fore.RED}[ERROR] {message}")
+    print(f"{Fore.RED}{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} [ERROR] {message}")
 
 def countdown_timer(seconds: int):
     # For long waits (over 2 minutes), only update every minute to reduce console output
