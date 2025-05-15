@@ -1,19 +1,15 @@
-Create MineSweeper.py
-10*10
-现在需要实现一个python的扫雷解答全过程， 请按步骤实现
-1. 每次接受一个10*10的二维数据如：
-[
-                [null,null,null,null,null,null,null,null,null,null],
-                [null,null,null,null,null,null,null,null,null,null],
-                [null,null,null,null,null,null,null,null,null,null],
-                [null,null,null,null,1,null,null,null,null,null],
-                [null,null,null,null,null,null,1,null,null,null],
-                [null,null,null,null,null,null,null,null,null,null],
-                [null,null,null,null,null,null,null,null,null,null],
-                [null,null,null,null,null,null,null,null,null,null],
-                [null,null,null,null,null,null,null,null,null,null],
-                [null,null,null,null,null,null,null,null,null,null]
-            ]
-
-只需要根据这个现有的格子数据， 计算并返回安全的坐标点，
-如果没有绝对的安全点责需要根据实际的情况返回， 远离已经揭露的数字格子
+设计一个基于扫雷游戏规则的确定性安全坐标分析算法，要求：
+	1	输入：当前棋盘状态（二维数组），包含三种单元格类型：
+	•	revealed: int（已揭开，数值为相邻雷数0-8）
+	•	unrevealed（未揭开）
+	•	flagged（标记为雷）
+	2	输出：所有可安全点击的坐标集合（无需概率推断，仅限逻辑必然安全的坐标）
+	3	算法要求：
+	•	遍历所有已揭开数字单元格
+	•	对每个数字n的单元格，分析其8邻域内的未揭开单元格：
+	•	若 n - 相邻flagged数 == 相邻unrevealed数 → 所有相邻unrevealed均为雷（不安全）
+	•	若 flagged数 == n → 所有相邻unrevealed均为安全区域
+	•	支持棋盘边缘和角落的坐标边界检查
+	•	时间复杂度优化：避免重复计算相邻单元格
+	4	输出格式要求：
+	•	返回坐标集合的数学描述
