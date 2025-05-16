@@ -3,6 +3,19 @@ import time
 from typing import List, Tuple, Optional, Set, Dict, Any, DefaultDict
 from collections import defaultdict
 
+# 添加彩色输出支持
+try:
+    from colorama import init, Fore, Back, Style
+    COLORAMA_AVAILABLE = True
+    init(autoreset=True)  # 初始化colorama
+except ImportError:
+    COLORAMA_AVAILABLE = False
+    # 创建模拟的颜色类
+    class DummyColors:
+        def __getattr__(self, name):
+            return ""
+    Fore = Back = Style = DummyColors()
+
 class MinesweeperSolver:
     """扫雷求解器，提供安全坐标分析"""
     
@@ -27,6 +40,9 @@ class MinesweeperSolver:
         self.revealed_numbers = {}  # 缓存已揭示的数字 (x, y) -> 数字值
         self.unrevealed_map = defaultdict(set)  # 未揭示格子 -> 周围的已知数字坐标集合
         self.number_to_unrevealed = {}  # 已揭示数字 -> 其周围未揭示格子列表
+        
+        # 用于追踪最后点击的坐标，方便调试
+        self.last_clicked = None
     
     def update_board(self, tiles: List[List[Optional[int]]]):
         """更新棋盘状态
@@ -382,6 +398,109 @@ class MinesweeperSolver:
         print(f"推理安全格子数: {len(self.additional_safe)}")
         print(f"推理地雷格子数: {len(self.additional_mines)}")
         print("="*30)
+        
+    def render_board(self, highlight_coord: Optional[Tuple[int, int]] = None):
+        """增强版棋盘渲染，使用彩色标记，清晰显示安全坐标和地雷位置
+        
+        Args:
+            highlight_coord: 可选，要特别高亮的坐标（如最后点击的位置）
+        """
+        # 计算安全坐标和地雷坐标
+        safe_coords = self.get_safe_coordinates()
+        mine_coords = self.get_mine_coordinates()
+        
+        # 创建坐标标签
+        column_labels = "   " + " ".join([f"{x}" for x in range(self.board_size)])
+        
+        print("\n" + "="*50)
+        print(f"棋盘状态 ({self.board_size}x{self.board_size}):")
+        print(column_labels)
+        
+        for y in range(self.board_size):
+            row = [f"{y:2d} "]
+            
+            for x in range(self.board_size):
+                coord = (x, y)
+                
+                # 选择合适的符号和颜色
+                if highlight_coord and coord == highlight_coord:
+                    # 最后点击的位置用红色背景高亮
+                    cell_format = Back.RED
+                    
+                    if coord in self.revealed:
+                        if self.board[y][x] == 0:
+                            cell = " ·"
+                        else:
+                            cell = f" {self.board[y][x]}"
+                    else:
+                        cell = " ?"
+                        
+                elif coord in self.flagged:
+                    # 标记为地雷的位置
+                    cell_format = Fore.RED + Style.BRIGHT
+                    cell = " F"
+                elif coord in self.revealed:
+                    # 已揭示的位置
+                    if self.board[y][x] == 0:
+                        cell_format = Fore.BLUE
+                        cell = " ·"
+                    else:
+                        # 根据周围地雷数量使用不同颜色
+                        num = self.board[y][x]
+                        if num == 1:
+                            cell_format = Fore.BLUE
+                        elif num == 2:
+                            cell_format = Fore.GREEN
+                        elif num == 3:
+                            cell_format = Fore.RED
+                        elif num == 4:
+                            cell_format = Fore.MAGENTA
+                        else:
+                            cell_format = Fore.YELLOW
+                        cell = f" {num}"
+                elif coord in safe_coords:
+                    # 安全坐标用绿色背景标记
+                    cell_format = Back.GREEN + Fore.BLACK
+                    cell = " S"
+                elif coord in mine_coords:
+                    # 推断的地雷位置用红色背景标记
+                    cell_format = Back.RED + Fore.WHITE
+                    cell = " M"
+                else:
+                    # 未知格子
+                    cell_format = Fore.WHITE
+                    cell = " ?"
+                
+                # 添加到行中
+                if COLORAMA_AVAILABLE:
+                    row.append(cell_format + cell + Style.RESET_ALL)
+                else:
+                    row.append(cell)
+            
+            print("".join(row))
+        
+        print("="*50)
+        print(f"已揭示: {len(self.revealed)} | 已标记地雷: {len(self.flagged)}")
+        print(f"安全坐标: {len(safe_coords)} | 推断地雷: {len(mine_coords)}")
+        
+        if safe_coords:
+            # 只显示前10个安全坐标
+            safe_str = ", ".join([f"({x},{y})" for x, y in list(safe_coords)[:10]])
+            if len(safe_coords) > 10:
+                safe_str += f"... 等{len(safe_coords)}个"
+            print(f"安全坐标: {safe_str}")
+        
+        if highlight_coord:
+            print(f"上次点击: {highlight_coord}")
+            
+        print("="*50)
+        print("图例: · - 已揭示空格, 数字 - 周围地雷数, ? - 未揭示, F - 已标记地雷")
+        print("      S - 计算得到的安全格子, M - 计算得到的地雷位置")
+        print("="*50)
+
+    def set_last_clicked(self, coord: Tuple[int, int]):
+        """设置最后点击的坐标，用于调试"""
+        self.last_clicked = coord
 
 # 为兼容性保留DeterministicMinesweeperSolver类名
 DeterministicMinesweeperSolver = MinesweeperSolver
