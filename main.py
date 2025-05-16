@@ -9,8 +9,7 @@ from colorama import Fore, Style, init
 from datetime import datetime, timezone, timedelta
 from fake_useragent import UserAgent
 from log import log_info, log_success, log_warning, log_error, countdown_timer, format_separator
-from minesweeper_solver import MinesweeperSolver
-
+from minesweeper_solver import DeterministicMinesweeperSolver
 # Initialize colorama
 init(autoreset=True)
 
@@ -537,7 +536,7 @@ class MagicNewtonAutomation:
         """Perform dice rolls until no more rolls are available"""
         token_display = f"{token[:5]}...{token[-5:]}"
         roll_count = 0
-        max_attempts = 10  # Safety limit
+        max_attempts = 2  # Safety limit
         
         log_info(f"Starting dice rolls for token {token_display}")
         
@@ -589,148 +588,33 @@ class MagicNewtonAutomation:
         return completed_count
     
     def play_minesweeper_game(self, token: str, proxies: Optional[Dict[str, str]] = None, difficulty: str = "Easy") -> Optional[bool]:
-        """Play a single minesweeper game for the given token.
-        Returns:
-            True: 游戏成功完成
-            False: 游戏失败
-            None: 已达到当日最大游戏次数，不应再尝试
-        """
+        """进行单局扫雷游戏，使用确定性安全坐标策略
         
-        token_display = f"{token[:5]}...{token[-5:]}"
-        log_info(f"Starting a {difficulty} minesweeper game for token {token_display}")
-        
-        try:
-            # Create solver instance
-            solver = MinesweeperSolver()
-            
-            # Start the game
-            start_response = self.api_client.start_minesweeper_game(token=token, difficulty=difficulty, proxies=proxies)
-            
-            if 'error' in start_response:
-                if "Max games reached for today" in str(start_response.get("error", "")):
-                    log_warning(f"Max minesweeper games already reached for today - token: {token_display}")
-                    return None  # 特殊返回值，表示已达到最大游戏次数
-                elif "Quest already completed" in str(start_response.get("error", "")):
-                    log_warning(f"Minesweeper quest already completed for token {token_display}")
-                    return False
-                else:
-                    log_error(f"Failed to start minesweeper game for token {token_display}: {start_response.get('error')}")
-                    return False
-            
-            if not start_response or 'data' not in start_response:
-                log_error(f"Invalid start game response for token {token_display}")
-                return False
-                
-            user_quest_id = start_response['data']['id']
-            log_success(f"Successfully started minesweeper game with quest ID: {user_quest_id}")
-            
-            # Update board state
-            if '_minesweeper' in start_response['data'] and 'tiles' in start_response['data']['_minesweeper']:
-                solver.reset_board()
-                solver.update_board(start_response['data']['_minesweeper']['tiles'])
-            
-            # Play the game
-            move_count = 0
-            max_moves = 50  # Safety limit
-            safe_coordinates_cache = []  # 缓存安全坐标
-            
-            while move_count < max_moves:
-                # 如果缓存为空，获取新的安全坐标列表
-                if not safe_coordinates_cache:
-                    safe_coordinates_cache = solver.get_safe_coordinates()
-                    log_info(f"获取了 {len(safe_coordinates_cache)} 个安全坐标")
-                    
-                    # 如果仍然没有安全坐标，回退到获取单个坐标
-                    if not safe_coordinates_cache:
-                        log_warning("没有找到安全坐标，尝试获取单个移动坐标")
-                        safe_coordinates_cache = [solver.get_next_move()]
-                
-                # 从缓存中获取下一个安全坐标
-                x, y = safe_coordinates_cache.pop(0)
-                move_count += 1
-                
-                try:
-                    log_info(f"Move #{move_count}: Clicking tile at ({x}, {y})")
-                    
-                    # Click the tile
-                    response = self.api_client.click_minesweeper_tile(
-                        token=token,
-                        user_quest_id=user_quest_id,
-                        x=x,
-                        y=y,
-                        proxies=proxies
-                    )
-                    
-                    # Check for errors
-                    if 'error' in response:
-                        log_error(f"Error clicking tile: {response.get('error')}")
-                        return False
-                    
-                    # Update board state
-                    if 'data' in response and '_minesweeper' in response['data'] and 'tiles' in response['data']['_minesweeper']:
-                        # 更新棋盘状态并清空缓存(因为棋盘已更新，之前的安全坐标可能不再有效)
-                        solver.update_board(response['data']['_minesweeper']['tiles'])
-                        safe_coordinates_cache = []  # 清空缓存
-                        
-                        # Check if game is over
-                        game_over = response['data']['_minesweeper'].get('gameOver', False)
-                        exploded = response['data']['_minesweeper'].get('exploded', False)
-                        
-                        if game_over:
-                            if exploded:
-                                log_error(f"💣 Hit a mine! Game over after {move_count} moves.")
-                                return False
-                            else:
-                                log_success(f"🎮 Successfully completed minesweeper game in {move_count} moves!")
-                                return True
-                    
-                    # Small delay between moves
-                    time.sleep(1)
-                    
-                except Exception as e:
-                    log_error(f"Error during move #{move_count}: {str(e)}")
-                    safe_coordinates_cache = []  # 出错时清空缓存
-                    return False
-            
-            log_warning(f"Reached maximum moves limit ({max_moves}), stopping game")
-            return False
-            
-        except Exception as e:
-            log_error(f"Exception in minesweeper game: {str(e)}")
-            return False
-    
-    def play_minesweeper_game_advanced(self, token: str, proxies: Optional[Dict[str, str]] = None, difficulty: str = "Easy") -> Optional[bool]:
-        """高级扫雷游戏实现，使用概率分析优化点击策略
-        
-        Args:
-            token: 用户令牌
-            proxies: 代理设置
-            difficulty: 游戏难度
-            
         Returns:
             True: 游戏成功完成
             False: 游戏失败
             None: 已达到当日最大游戏次数，不应再尝试
         """
         token_display = f"{token[:5]}...{token[-5:]}"
-        log_info(f"启动高级扫雷游戏（{difficulty}难度）- 使用概率分析 - token: {token_display}")
+        log_info(f"开始 {difficulty} 难度扫雷游戏 - token: {token_display}")
         
         try:
-            # 创建扫雷求解器实例
-            solver = MinesweeperSolver()
+            # 创建确定性扫雷求解器实例
+            solver = DeterministicMinesweeperSolver()
             
             # 开始游戏
             start_response = self.api_client.start_minesweeper_game(token=token, difficulty=difficulty, proxies=proxies)
             
+            # 处理开始游戏的错误情况
             if 'error' in start_response:
                 if "Max games reached for today" in str(start_response.get("error", "")):
-                    log_warning(f"已达到今日最大扫雷游戏次数 - token: {token_display}")
-                    return None  # 特殊返回值，表示已达到最大游戏次数
+                    log_warning(f"今日已达到最大扫雷游戏次数 - token: {token_display}")
+                    return None
                 elif "Quest already completed" in str(start_response.get("error", "")):
-                    log_warning(f"扫雷任务已完成，无法进行更多游戏 - token: {token_display}")
+                    log_warning(f"扫雷任务已完成 - token: {token_display}")
                     return False
                 else:
-                    log_error(f"开始扫雷游戏失败 - token: {token_display} - 错误: {start_response.get('error')}")
+                    log_error(f"开始扫雷游戏失败 - token: {token_display}: {start_response.get('error')}")
                     return False
             
             if not start_response or 'data' not in start_response:
@@ -740,45 +624,49 @@ class MagicNewtonAutomation:
             user_quest_id = start_response['data']['id']
             log_success(f"成功启动扫雷游戏，任务ID: {user_quest_id}")
             
-            # 更新初始棋盘状态
+            # 初始化棋盘状态
             if '_minesweeper' in start_response['data'] and 'tiles' in start_response['data']['_minesweeper']:
                 solver.reset_board()
                 solver.update_board(start_response['data']['_minesweeper']['tiles'])
             
-            # 游戏循环
             move_count = 0
             max_moves = 50  # 最大步数限制
             
-            # 记录已经尝试过的坐标，避免重复点击
-            tried_coordinates = set()
-            
             while move_count < max_moves:
-                # 获取带概率信息的安全坐标列表
-                safe_coordinates = solver.get_safe_coordinates_with_probability()
+                # 获取当前确定安全的坐标
+                safe_coords = solver.get_safe_coordinates()
                 
-                # 移除已尝试过的坐标
-                safe_coordinates = [(coord, prob) for coord, prob in safe_coordinates if coord not in tried_coordinates]
+                # 输出当前棋盘状态
+                # revealed_count = len(solver.revealed)
+                # flagged_count = len(solver.flagged)
+                # log_info(f"棋盘状态: 已揭示 {revealed_count} 格，已标记 {flagged_count} 地雷")
+                log_info(f"当前分析得到 {len(safe_coords)} 个确定安全的坐标")
                 
-                if not safe_coordinates:
-                    log_warning("没有可用的安全坐标，游戏可能已完成或无法继续")
-                    # 恢复到普通获取移动方式
-                    x, y = solver.get_next_move()
-                    if (x, y) in tried_coordinates:
-                        log_error("无法获取新的安全坐标，放弃游戏")
-                        return False
-                else:
-                    # 选择最安全的坐标（概率最高）
-                    (x, y), probability = safe_coordinates[0]
-                    log_info(f"选择坐标 ({x}, {y}) - 安全概率: {probability:.2f}")
-                
-                # 标记为已尝试
-                tried_coordinates.add((x, y))
-                move_count += 1
-                
-                try:
-                    log_info(f"移动 #{move_count}: 点击 ({x}, {y})")
+                # 如果没有安全坐标，尝试随机选择一个未揭示的位置
+                if not safe_coords:
+                    all_unrevealed = []
+                    for y in range(solver.board_size):
+                        for x in range(solver.board_size):
+                            if (x, y) not in solver.revealed and (x, y) not in solver.flagged:
+                                all_unrevealed.append((x, y))
                     
-                    # 点击格子
+                    if not all_unrevealed:
+                        log_info("没有可用的坐标，游戏可能已完成")
+                        return True
+                    
+                    # 随机选择一个未揭示的坐标
+                    x, y = random.choice(all_unrevealed)
+                    log_info(f"没有确定安全的坐标，随机选择坐标: ({x}, {y})")
+                else:
+                    # 从安全坐标中选择一个
+                    x, y = next(iter(safe_coords))
+                    log_info(f"选择安全坐标: ({x}, {y})")
+                
+                move_count += 1
+                log_info(f"#{move_count}: 点击坐标 ({x}, {y})")
+                
+                # 执行点击
+                try:
                     response = self.api_client.click_minesweeper_tile(
                         token=token,
                         user_quest_id=user_quest_id,
@@ -787,27 +675,29 @@ class MagicNewtonAutomation:
                         proxies=proxies
                     )
                     
-                    # 检查错误
+                    # 检查点击错误
                     if 'error' in response:
-                        log_error(f"点击格子出错: {response.get('error')}")
+                        log_error(f"点击错误: {response.get('error')}")
                         return False
                     
                     # 更新棋盘状态
                     if 'data' in response and '_minesweeper' in response['data'] and 'tiles' in response['data']['_minesweeper']:
+                        # 重置并更新棋盘状态
+                        solver.reset_board()
                         solver.update_board(response['data']['_minesweeper']['tiles'])
                         
-                        # 检查游戏是否结束
+                        # 检查游戏状态
                         game_over = response['data']['_minesweeper'].get('gameOver', False)
                         exploded = response['data']['_minesweeper'].get('exploded', False)
                         
                         if game_over:
                             if exploded:
-                                log_error(f"💣 踩到地雷！游戏结束，共进行了 {move_count} 步")
+                                log_error(f"💣 踩到地雷! 游戏结束，共进行 {move_count} 步。")
                                 return False
                             else:
-                                log_success(f"🎮 成功完成扫雷游戏，用了 {move_count} 步！")
+                                log_success(f"🎮 成功完成扫雷游戏，用了 {move_count} 步!")
                                 return True
-                    
+                
                     # 步骤间短暂延迟
                     time.sleep(1)
                     
@@ -821,14 +711,14 @@ class MagicNewtonAutomation:
         except Exception as e:
             log_error(f"扫雷游戏过程中发生异常: {str(e)}")
             return False
-            
-    def perform_minesweeper_games(self, token: str, proxies: Optional[Dict[str, str]] = None, strategy: str = "advanced"):
+    
+    def perform_minesweeper_games(self, token: str, proxies: Optional[Dict[str, str]] = None, strategy: str = "simple"):
         """执行扫雷游戏直到达到每日限制
         
         Args:
             token: 用户令牌
             proxies: 代理设置
-            strategy: 游戏策略，可选值为"advanced"(高级),"simple"(简单),"mixed"(混合)
+            strategy: 保留参数，现在只使用确定性安全坐标策略
         """
         token_display = f"{token[:5]}...{token[-5:]}"
         
@@ -844,125 +734,42 @@ class MagicNewtonAutomation:
             games_to_play = 3 - completed_games
             
             if games_to_play <= 0:
-                log_success(f"All daily minesweeper games already completed for token {token_display}")
+                log_success(f"今日扫雷游戏已全部完成 - token: {token_display}")
                 # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
                 if hasattr(self, 'max_games_reached_tokens'):
                     self.max_games_reached_tokens.add(token)
                     log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
                 return
                 
-            log_info(f"Need to play {games_to_play} minesweeper games for token {token_display}")
-            log_info(f"使用游戏策略: {strategy}")
+            log_info(f"计划进行 {games_to_play} 局扫雷游戏 - token: {token_display}")
             
             for i in range(games_to_play):
-                log_info(f"Starting minesweeper game #{i+1} of {games_to_play}")
+                log_info(f"开始扫雷游戏 #{i+1}/{games_to_play}")
                 
-                # 根据策略选择游戏方法
-                if strategy == "simple":
-                    success = self.play_minesweeper_game(token=token, proxies=proxies)
-                    # 如果返回None，表示已达到最大游戏次数，立即返回
-                    if success is None:
-                        log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                        # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                        if hasattr(self, 'max_games_reached_tokens'):
-                            self.max_games_reached_tokens.add(token)
-                            log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                        return
-                    # 如果简单策略失败，尝试高级策略
-                    elif not success:
-                        log_warning("简单策略失败，尝试使用高级策略")
-                        success = self.play_minesweeper_game_advanced(token=token, proxies=proxies)
-                        # 再次检查是否达到最大游戏数
-                        if success is None:
-                            log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                            # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                            if hasattr(self, 'max_games_reached_tokens'):
-                                self.max_games_reached_tokens.add(token)
-                                log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                            return
-                elif strategy == "mixed":
-                    # 混合策略：随机选择游戏方法
-                    if random.random() < 0.5:
-                        log_info("随机选择简单策略")
-                        success = self.play_minesweeper_game(token=token, proxies=proxies)
-                        # 检查是否达到最大游戏数
-                        if success is None:
-                            log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                            # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                            if hasattr(self, 'max_games_reached_tokens'):
-                                self.max_games_reached_tokens.add(token)
-                                log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                            return
-                        elif not success:
-                            log_warning("简单策略失败，尝试使用高级策略")
-                            success = self.play_minesweeper_game_advanced(token=token, proxies=proxies)
-                            # 再次检查是否达到最大游戏数
-                            if success is None:
-                                log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                                # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                                if hasattr(self, 'max_games_reached_tokens'):
-                                    self.max_games_reached_tokens.add(token)
-                                    log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                                return
-                    else:
-                        log_info("随机选择高级策略")
-                        success = self.play_minesweeper_game_advanced(token=token, proxies=proxies)
-                        # 检查是否达到最大游戏数
-                        if success is None:
-                            log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                            # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                            if hasattr(self, 'max_games_reached_tokens'):
-                                self.max_games_reached_tokens.add(token)
-                                log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                            return
-                        elif not success:
-                            log_warning("高级策略失败，尝试使用简单策略")
-                            success = self.play_minesweeper_game(token=token, proxies=proxies)
-                            # 再次检查是否达到最大游戏数
-                            if success is None:
-                                log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                                # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                                if hasattr(self, 'max_games_reached_tokens'):
-                                    self.max_games_reached_tokens.add(token)
-                                    log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                                return
-                else:  # 默认使用高级策略
-                    success = self.play_minesweeper_game_advanced(token=token, proxies=proxies)
-                    # 检查是否达到最大游戏数
-                    if success is None:
-                        log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                        # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                        if hasattr(self, 'max_games_reached_tokens'):
-                            self.max_games_reached_tokens.add(token)
-                            log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                        return
-                    # 如果高级策略失败，尝试简单策略
-                    elif not success:
-                        log_warning("高级策略失败，尝试使用简单策略")
-                        success = self.play_minesweeper_game(token=token, proxies=proxies)
-                        # 再次检查是否达到最大游戏数
-                        if success is None:
-                            log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
-                            # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
-                            if hasattr(self, 'max_games_reached_tokens'):
-                                self.max_games_reached_tokens.add(token)
-                                log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
-                            return
+                # 使用确定性安全坐标策略
+                success = self.play_minesweeper_game(token=token, proxies=proxies)
                 
-                # 检查该轮游戏是否最终成功
-                if success:
+                # 检查游戏结果
+                if success is None:
+                    # 已达到最大游戏次数，立即返回
+                    log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
+                    if hasattr(self, 'max_games_reached_tokens'):
+                        self.max_games_reached_tokens.add(token)
+                        log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
+                    return
+                elif success:
                     log_success(f"游戏 #{i+1} 完成成功！")
                 else:
-                    log_warning(f"游戏 #{i+1} 所有策略都失败")
+                    log_warning(f"游戏 #{i+1} 失败")
                 
                 # 游戏间添加延迟
                 if i < games_to_play - 1:
                     task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
-                    log_info(f"Waiting {task_delay} seconds before next minesweeper game...")
+                    log_info(f"等待 {task_delay} 秒后开始下一局扫雷游戏...")
                     countdown_timer(task_delay)
         except Exception as e:
-            log_error(f"Error in minesweeper games process for token {token_display}: {str(e)}")
-            log_warning(f"Skipping remaining minesweeper games for token {token_display}")
+            log_error(f"扫雷游戏过程中发生错误 - token: {token_display}: {str(e)}")
+            log_warning(f"跳过剩余的扫雷游戏 - token: {token_display}")
             return
 
     def is_new_day(self, last_run_date: datetime) -> bool:
@@ -971,11 +778,11 @@ class MagicNewtonAutomation:
         current_date = datetime.now(timezone.utc).date()
         return current_date > last_run_date.date()
         
-    def run_automation(self, minesweeper_strategy: str = "advanced"):
+    def run_automation(self, minesweeper_strategy: str = "simple"):
         """运行自动化流程
         
         Args:
-            minesweeper_strategy: 扫雷游戏策略，可选值为"advanced"(高级),"simple"(简单),"mixed"(混合)
+            minesweeper_strategy: 保留参数，现在只使用确定性安全坐标策略
         """
         # Keep track of when we last ran
         last_run_date = datetime.now(timezone.utc)
@@ -998,7 +805,6 @@ class MagicNewtonAutomation:
                     log_info("已重置扫雷游戏计数")
                 
                 log_success(f"Current Time: {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-                log_info(f"使用扫雷策略: {minesweeper_strategy}")
                 
                 # Shuffle tokens to randomize the order of processing
                 tokens_to_process = self.api_client.session_tokens.copy()
@@ -1149,19 +955,5 @@ if __name__ == "__main__":
     print(f"{Fore.GREEN}🚀 Starting Magic Newton Automation v1.5")
     print(f"{Fore.GREEN}{'=' * 70}\n")
     
-    # 添加策略选择提示
-    # print(f"\n{Fore.CYAN}请选择扫雷游戏策略:")
-    # print(f"{Fore.CYAN}1. 高级策略 (利用概率分析，智能选择)")
-    # print(f"{Fore.CYAN}2. 简单策略 (简单顺序点击)")
-    # print(f"{Fore.CYAN}3. 混合策略 (随机选择，失败时自动切换)")
-    
-    # strategy_choice = input(f"\n{Fore.YELLOW}请输入选择 (1/2/3，默认为1): {Fore.WHITE}")
-    
-    # minesweeper_strategy = "advanced"  # 默认选择
-    # if strategy_choice == "2":
-    #     minesweeper_strategy = "simple"
-    # elif strategy_choice == "3":
-    #     minesweeper_strategy = "mixed"
-    
     automation = MagicNewtonAutomation()
-    automation.run_automation(minesweeper_strategy="advanced")
+    automation.run_automation()
