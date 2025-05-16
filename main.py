@@ -31,7 +31,7 @@ ONE_TIME_QUEST_ID = [
     "Connect your Guild"
 ]
 MIN_TASK_DELAY = 7  # seconds
-MAX_TASK_DELAY = 23  # seconds
+MAX_TASK_DELAY = 19  # seconds
 MIN_LOOP_DELAY = int(24 * 60 * 60 / 1.5)  # 8 hours (minimum wait)
 MAX_LOOP_DELAY = int((24 * 60 * 60))  # 24 hours (maximum wait)
 
@@ -665,7 +665,7 @@ class MagicNewtonAutomation:
             user_quest_id = game_data['id']
             
             move_count = 0
-            max_moves = 50  # 最大步数限制
+            max_moves = 25  # 最大步数限制
             
             # 用于缓存安全坐标的集合
             safe_coordinates_cache = set()
@@ -762,10 +762,10 @@ class MagicNewtonAutomation:
                     # 从缓存的安全坐标中选择一个
                     x, y = next(iter(safe_coordinates_cache))
                     safe_coordinates_cache.remove((x, y))  # 从缓存中移除将要点击的坐标
-                    log_info(f"选择缓存的安全坐标: ({x}, {y})")
+                    # log_info(f"选择缓存的安全坐标: ({x}, {y})")
                 
                 move_count += 1
-                log_info(f"移动 #{move_count}: 点击坐标 ({x}, {y})")
+                log_info(f"#{move_count}: 点击坐标 ({x}, {y})")
                 
                 # 设置最后点击的坐标（用于调试）
                 solver.set_last_clicked((x, y))
