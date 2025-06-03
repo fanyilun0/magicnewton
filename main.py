@@ -10,6 +10,9 @@ from datetime import datetime, timezone, timedelta
 from fake_useragent import UserAgent
 from log import log_info, log_success, log_warning, log_error, countdown_timer, format_separator
 from gemini_resolver import MinesweeperSolver
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import queue
 # Initialize colorama
 init(autoreset=True)
 
@@ -32,8 +35,7 @@ ONE_TIME_QUEST_ID = [
 ]
 MIN_TASK_DELAY = 7  # seconds
 MAX_TASK_DELAY = 19  # seconds
-MIN_LOOP_DELAY = int(24 * 60 * 60 / 1.5)  # 8 hours (minimum wait)
-MAX_LOOP_DELAY = int((24 * 60 * 60))  # 24 hours (maximum wait)
+LOOP_DELAY = int(24 * 60 * 60)  # 24 hours (minimum wait)
 
 # Rainbow Banner
 def rainbow_banner():
@@ -372,10 +374,13 @@ class APIClient:
 
 # Main class for automation
 class MagicNewtonAutomation:
-    def __init__(self):
+    def __init__(self, max_parallel_tokens: int = 3):
         log_info("Initializing Magic Newton Automation")
         self.proxy_manager = ProxyManager()
         self.api_client = APIClient(BASE_URL)
+        self.max_parallel_tokens = max_parallel_tokens
+        self.thread_lock = threading.Lock()
+        log_info(f"设置最大并行token数量: {max_parallel_tokens}")
 
     def display_user_info(self, user_data: Dict[str, Any], token: str):
         token_display = f"{token[:5]}...{token[-5:]}"
@@ -538,18 +543,21 @@ class MagicNewtonAutomation:
         roll_count = 0
         max_attempts = 2  # Safety limit
         
-        log_info(f"Starting dice rolls for token {token_display}")
+        with self.thread_lock:
+            log_info(f"开始骰子游戏 - token: {token_display}")
         
         while roll_count < max_attempts:
             # Random delay between rolls
             if roll_count > 0:
                 task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
-                log_info(f"Waiting {task_delay} seconds before next roll attempt...")
-                countdown_timer(task_delay)
+                with self.thread_lock:
+                    log_info(f"等待 {task_delay} 秒后进行下一次骰子尝试... - token: {token_display}")
+                time.sleep(task_delay)
             
             # Attempt roll
             roll_count += 1
-            log_info(f"Attempting dice roll #{roll_count} for token {token_display}")
+            with self.thread_lock:
+                log_info(f"尝试第 #{roll_count} 次骰子游戏 - token: {token_display}")
             
             roll_result = self.api_client.roll_dice(token=token)
             roll_success = self.process_roll(roll_result, token)
@@ -557,14 +565,17 @@ class MagicNewtonAutomation:
             # Stop if roll failed or quest already completed
             if not roll_success or "error" in roll_result:
                 if roll_count > 1:
-                    log_success(f"Successfully completed {roll_count-1} dice rolls for token {token_display}")
+                    with self.thread_lock:
+                        log_success(f"成功完成 {roll_count-1} 次骰子游戏 - token: {token_display}")
                 else:
-                    log_warning(f"No dice rolls completed for token {token_display}")
+                    with self.thread_lock:
+                        log_warning(f"没有完成任何骰子游戏 - token: {token_display}")
                 break
         
         if roll_count >= max_attempts:
-            log_warning(f"Reached maximum roll attempts ({max_attempts}) for token {token_display}")
-    
+            with self.thread_lock:
+                log_warning(f"达到最大骰子尝试次数 ({max_attempts}) - token: {token_display}")
+
     def check_minesweeper_status(self, user_quests_data: Dict[str, Any], token: str) -> int:
         """Check how many minesweeper games have been completed today.
         Returns the count of completed games (0-3)."""
@@ -574,7 +585,8 @@ class MagicNewtonAutomation:
         completed_count = 0
         
         if not user_quests_data or 'data' not in user_quests_data:
-            log_warning(f"No quest data available for token {token_display}")
+            with self.thread_lock:
+                log_warning(f"没有可用的任务数据 - token: {token_display}")
             return 0
             
         # Filter minesweeper quests completed today
@@ -584,7 +596,8 @@ class MagicNewtonAutomation:
                 if updated_at.date() == current_time.date():
                     completed_count += 1
         
-        log_info(f"🎮 Minesweeper games completed today: {completed_count}/3 for token {token_display}")
+        with self.thread_lock:
+            log_info(f"🎮 今日已完成扫雷游戏: {completed_count}/3 - token: {token_display}")
         return completed_count
     
     def _start_minesweeper_game(self, token: str, difficulty: str, proxies: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
@@ -624,15 +637,15 @@ class MagicNewtonAutomation:
     def _log_game_status(self, solver, safe_coords, move_count, cached_coords_count=None):
         """记录当前游戏状态日志"""
         # 输出当前分析信息
-        log_info(f"移动 #{move_count} - 分析结果")
+        # log_info(f"移动 #{move_count} - 分析结果")
         
-        if not safe_coords:
-            log_info("当前分析没有找到安全坐标")
-        else:
-            log_info(f"当前分析得到 {len(safe_coords)} 个新的安全坐标")
+        # if not safe_coords:
+        #     log_info("当前分析没有找到安全坐标")
+        # else:
+        #     log_info(f"当前分析得到 {len(safe_coords)} 个新的安全坐标")
             
-        if cached_coords_count is not None:
-            log_info(f"缓存中有 {cached_coords_count} 个安全坐标")
+        # if cached_coords_count is not None:
+        #     log_info(f"缓存中有 {cached_coords_count} 个安全坐标")
         
         # 限制输出详情的坐标数量
         if safe_coords:
@@ -834,17 +847,21 @@ class MagicNewtonAutomation:
             games_to_play = 3 - completed_games
             
             if games_to_play <= 0:
-                log_success(f"今日扫雷游戏已全部完成 - token: {token_display}")
+                with self.thread_lock:
+                    log_success(f"今日扫雷游戏已全部完成 - token: {token_display}")
                 # 将token添加到已达到最大游戏次数的集合中（如果该集合存在）
                 if hasattr(self, 'max_games_reached_tokens'):
                     self.max_games_reached_tokens.add(token)
-                    log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
+                    with self.thread_lock:
+                        log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
                 return
                 
-            log_info(f"计划进行 {games_to_play} 局扫雷游戏 - token: {token_display}")
+            with self.thread_lock:
+                log_info(f"计划进行 {games_to_play} 局扫雷游戏 - token: {token_display}")
             
             for i in range(games_to_play):
-                log_info(f"开始扫雷游戏 #{i+1}/{games_to_play}")
+                with self.thread_lock:
+                    log_info(f"开始扫雷游戏 #{i+1}/{games_to_play} - token: {token_display}")
                 
                 # 使用改进的扫雷算法
                 success = self.play_minesweeper_game(token=token, proxies=proxies)
@@ -852,24 +869,30 @@ class MagicNewtonAutomation:
                 # 检查游戏结果
                 if success is None:
                     # 已达到最大游戏次数，立即返回
-                    log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
+                    with self.thread_lock:
+                        log_warning(f"已达到今日最大扫雷游戏次数，停止尝试 - token: {token_display}")
                     if hasattr(self, 'max_games_reached_tokens'):
                         self.max_games_reached_tokens.add(token)
-                        log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
+                        with self.thread_lock:
+                            log_info(f"已将token添加到达到最大游戏次数的列表: {token_display}")
                     return
                 elif success:
-                    log_success(f"游戏 #{i+1} 完成成功！")
+                    with self.thread_lock:
+                        log_success(f"游戏 #{i+1} 完成成功！ - token: {token_display}")
                 else:
-                    log_warning(f"游戏 #{i+1} 失败")
+                    with self.thread_lock:
+                        log_warning(f"游戏 #{i+1} 失败 - token: {token_display}")
                 
                 # 游戏间添加延迟
                 if i < games_to_play - 1:
                     task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
-                    log_info(f"等待 {task_delay} 秒后开始下一局扫雷游戏...")
-                    countdown_timer(task_delay)
+                    with self.thread_lock:
+                        log_info(f"等待 {task_delay} 秒后开始下一局扫雷游戏... - token: {token_display}")
+                    time.sleep(task_delay)
         except Exception as e:
-            log_error(f"扫雷游戏过程中发生错误 - token: {token_display}: {str(e)}")
-            log_warning(f"跳过剩余的扫雷游戏 - token: {token_display}")
+            with self.thread_lock:
+                log_error(f"扫雷游戏过程中发生错误 - token: {token_display}: {str(e)}")
+                log_warning(f"跳过剩余的扫雷游戏 - token: {token_display}")
             return
 
     def is_new_day(self, last_run_date: datetime) -> bool:
@@ -877,7 +900,167 @@ class MagicNewtonAutomation:
         This helps determine when to reset daily task counts."""
         current_date = datetime.now(timezone.utc).date()
         return current_date > last_run_date.date()
+
+    def process_single_token(self, token: str, max_games_reached_tokens: set) -> Dict[str, Any]:
+        """处理单个token的所有任务
         
+        Args:
+            token: 要处理的token
+            max_games_reached_tokens: 已达到最大游戏次数的token集合
+            
+        Returns:
+            Dict: 包含处理结果的字典
+        """
+        token_display = f"{token[:5]}...{token[-5:]}"
+        result = {
+            "token": token_display,
+            "success": False,
+            "error": None,
+            "tasks_completed": []
+        }
+        
+        try:
+            # 跳过被限速的token
+            if token in self.api_client.rate_limited_tokens:
+                limited_until = self.api_client.rate_limited_tokens[token]
+                if datetime.now() < limited_until:
+                    wait_time = int((limited_until - datetime.now()).total_seconds())
+                    result["error"] = f"Rate-limited (cooling down for {wait_time} more seconds)"
+                    with self.thread_lock:
+                        log_warning(f"跳过被限速的token {token_display} (还需冷却 {wait_time} 秒)")
+                    return result
+                else:
+                    # 限速已过期，从跟踪中移除
+                    del self.api_client.rate_limited_tokens[token]
+            
+            with self.thread_lock:
+                log_info(f"开始处理token: {token_display}")
+
+            # 获取代理
+            proxies = self.proxy_manager.get_proxy()
+            if proxies:
+                proxy_type = list(proxies.values())[0].split("://")[0] if "://" in list(proxies.values())[0] else "http"
+                with self.thread_lock:
+                    log_info(f"使用 {proxy_type} 代理: {list(proxies.values())[0]} - token: {token_display}")
+            else:
+                with self.thread_lock:
+                    log_warning(f"没有可用代理 - 直连处理 - token: {token_display}")
+
+            # 获取用户数据
+            user_data = self.api_client.make_request(
+                ENDPOINTS['user'],
+                token=token,
+                proxies=proxies
+            )
+            
+            if "error" in user_data:
+                result["error"] = f"Failed to get user data: {user_data.get('error')}"
+                return result
+                
+            with self.thread_lock:
+                self.display_user_info(user_data, token)
+
+            # 获取任务数据
+            quests_data = self.api_client.make_request(
+                ENDPOINTS['quests'],
+                token=token,
+                proxies=proxies
+            )
+
+            # 获取用户任务数据
+            user_quests_data = self.api_client.make_request(
+                ENDPOINTS['user_quests'],
+                token=token,
+                proxies=proxies
+            )
+
+            # 处理任务
+            with self.thread_lock:
+                self.process_quests(quests_data, user_quests_data, token)
+
+            # 检查并完成一次性任务
+            if quests_data and 'data' in quests_data:
+                available_quests = quests_data['data']
+                user_quests = {uq['questId']: uq for uq in user_quests_data.get('data', [])} if user_quests_data and 'data' in user_quests_data else {}
+                
+                with self.thread_lock:
+                    print(f"\n{format_separator()}")
+                    log_info(f"检查一次性任务 - token: {token_display}")
+                
+                for quest in available_quests:
+                    quest_id = quest['id']
+                    title = quest['title']
+                    
+                    # 检查是否为一次性任务
+                    if any(one_time_title in title for one_time_title in ONE_TIME_QUEST_ID):
+                        # 检查任务是否已完成
+                        if quest_id in user_quests and user_quests[quest_id]['status'] == "COMPLETED":
+                            with self.thread_lock:
+                                log_info(f"一次性任务 '{title}' 已完成")
+                        else:
+                            # 尝试完成任务
+                            with self.thread_lock:
+                                log_info(f"发现未完成的一次性任务: {title}")
+                            
+                            if self.complete_one_time_quest(quest_id, title, token, proxies):
+                                result["tasks_completed"].append(f"One-time quest: {title}")
+                            
+                            # 任务完成间添加随机延迟
+                            task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
+                            with self.thread_lock:
+                                log_info(f"等待 {task_delay} 秒后进行下一个操作... - token: {token_display}")
+                            time.sleep(task_delay)
+                
+                with self.thread_lock:
+                    print(f"{format_separator()}")
+
+            # 检查每日骰子是否已完成
+            roll_completed = self.check_roll_status(user_quests_data, token)
+
+            if roll_completed:
+                with self.thread_lock:
+                    log_success(f"跳过骰子游戏 - 今日已完成 - token: {token_display}")
+            else:
+                # 执行所有可用的骰子游戏
+                self.perform_rolls(token, proxies)
+                result["tasks_completed"].append("Dice rolls")
+            
+            # 检查token是否已达到扫雷游戏上限
+            if token in max_games_reached_tokens:
+                with self.thread_lock:
+                    log_warning(f"跳过扫雷游戏 - 该token今日已达到最大游戏次数: {token_display}")
+            else:
+                # 扫雷游戏前添加延迟
+                task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
+                with self.thread_lock:
+                    log_info(f"等待 {task_delay} 秒后开始扫雷游戏... - token: {token_display}")
+                time.sleep(task_delay)
+                
+                # 执行扫雷游戏
+                try:
+                    self.perform_minesweeper_games(token, proxies)
+                    result["tasks_completed"].append("Minesweeper games")
+                except Exception as e:
+                    with self.thread_lock:
+                        log_error(f"执行扫雷游戏时出错 - token: {token_display}: {str(e)}")
+                    
+                    # 检查是否遇到了Max games reached错误
+                    if "Max games reached for today" in str(e):
+                        max_games_reached_tokens.add(token)
+                        with self.thread_lock:
+                            log_warning(f"已将token添加到达到最大游戏次数的列表: {token_display}")
+
+            result["success"] = True
+            with self.thread_lock:
+                log_success(f"成功完成token处理: {token_display}")
+                
+        except Exception as e:
+            result["error"] = str(e)
+            with self.thread_lock:
+                log_error(f"处理token时发生错误 - {token_display}: {str(e)}")
+        
+        return result
+
     def run_automation(self):
         """运行自动化流程"""
         # Keep track of when we last ran
@@ -892,7 +1075,7 @@ class MagicNewtonAutomation:
                 
                 # Check if we've crossed over to a new day
                 if self.is_new_day(last_run_date):
-                    log_success(f"New day detected! Resetting daily task counts.")
+                    log_success(f"检测到新的一天！重置每日任务计数。")
                     last_run_date = current_time
                     # 重置APIClient中被限速的token
                     self.api_client.rate_limited_tokens.clear()
@@ -900,147 +1083,87 @@ class MagicNewtonAutomation:
                     max_games_reached_tokens.clear()
                     log_info("已重置扫雷游戏计数")
                 
-                log_success(f"Current Time: {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                log_success(f"当前时间: {current_time.strftime('%Y-%m-%d %H:%M:%S UTC')}")
                 
                 # Shuffle tokens to randomize the order of processing
                 tokens_to_process = self.api_client.session_tokens.copy()
                 random.shuffle(tokens_to_process)
-                log_info(f"Shuffled {len(tokens_to_process)} tokens for this run")
+                log_info(f"随机排列 {len(tokens_to_process)} 个token进行处理")
                 
-                for token in tokens_to_process:
-                    token_display = f"{token[:5]}...{token[-5:]}"
+                # 将token分批处理，每批最多self.max_parallel_tokens个
+                batch_size = self.max_parallel_tokens
+                total_batches = (len(tokens_to_process) + batch_size - 1) // batch_size
+                
+                log_info(f"开始并行处理，每批 {batch_size} 个token，共 {total_batches} 批")
+                
+                for batch_num in range(total_batches):
+                    start_idx = batch_num * batch_size
+                    end_idx = min(start_idx + batch_size, len(tokens_to_process))
+                    current_batch = tokens_to_process[start_idx:end_idx]
                     
-                    # 跳过被限速的token
-                    if token in self.api_client.rate_limited_tokens:
-                        limited_until = self.api_client.rate_limited_tokens[token]
-                        if datetime.now() < limited_until:
-                            wait_time = int((limited_until - datetime.now()).total_seconds())
-                            log_warning(f"Skipping rate-limited token {token_display} (cooling down for {wait_time} more seconds)")
-                            continue
-                        else:
-                            # 限速已过期，从跟踪中移除
-                            del self.api_client.rate_limited_tokens[token]
+                    log_success(f"处理第 {batch_num + 1}/{total_batches} 批，包含 {len(current_batch)} 个token")
                     
-                    log_info(f"Processing token: {token_display}")
-
-                    # Get a proxy for this request
-                    proxies = self.proxy_manager.get_proxy()
-                    if proxies:
-                        proxy_type = list(proxies.values())[0].split("://")[0] if "://" in list(proxies.values())[0] else "http"
-                        log_info(f"Using {proxy_type} proxy: {list(proxies.values())[0]}")
-                    else:
-                        log_warning("No proxy available - proceeding without proxy")
-
-                    # Get user data
-                    user_data = self.api_client.make_request(
-                        ENDPOINTS['user'],
-                        token=token,
-                        proxies=proxies
-                    )
-                    self.display_user_info(user_data, token)
-
-                    # Get quests data
-                    quests_data = self.api_client.make_request(
-                        ENDPOINTS['quests'],
-                        token=token,
-                        proxies=proxies
-                    )
-
-                    # Get user quests data
-                    user_quests_data = self.api_client.make_request(
-                        ENDPOINTS['user_quests'],
-                        token=token,
-                        proxies=proxies
-                    )
-
-                    # Process quests
-                    self.process_quests(quests_data, user_quests_data, token)
-
-                    # Check and complete one-time quests
-                    if quests_data and 'data' in quests_data:
-                        available_quests = quests_data['data']
-                        user_quests = {uq['questId']: uq for uq in user_quests_data.get('data', [])} if user_quests_data and 'data' in user_quests_data else {}
+                    # 使用ThreadPoolExecutor并行处理当前批次的token
+                    with ThreadPoolExecutor(max_workers=len(current_batch)) as executor:
+                        # 提交所有任务
+                        future_to_token = {
+                            executor.submit(self.process_single_token, token, max_games_reached_tokens): token 
+                            for token in current_batch
+                        }
                         
-                        print(f"\n{format_separator()}")
-                        log_info(f"Checking one-time quests for token {token_display}")
-                        
-                        for quest in available_quests:
-                            quest_id = quest['id']
-                            title = quest['title']
-                            
-                            # Check if this is a one-time quest by title
-                            if any(one_time_title in title for one_time_title in ONE_TIME_QUEST_ID):
-                                # Check if quest is already completed
-                                if quest_id in user_quests and user_quests[quest_id]['status'] == "COMPLETED":
-                                    log_info(f"One-time quest '{title}' already completed")
-                                else:
-                                    # Try to complete the quest
-                                    log_info(f"Found incomplete one-time quest: {title}")
-                                    self.complete_one_time_quest(quest_id, title, token, proxies)
-                                    
-                                    # Add random delay between quest completions
-                                    task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
-                                    log_info(f"Waiting {task_delay} seconds before next action...")
-                                    countdown_timer(task_delay)
-                        
-                        print(f"{format_separator()}")
-
-                    # Check if the daily dice roll is already completed
-                    roll_completed = self.check_roll_status(user_quests_data, token)
-
-                    if roll_completed:
-                        log_success(f"Skipping dice rolls for token {token_display} - already completed today")
-                    else:
-                        # Perform all available rolls
-                        self.perform_rolls(token, proxies)
+                        # 收集结果
+                        batch_results = []
+                        for future in as_completed(future_to_token):
+                            token = future_to_token[future]
+                            try:
+                                result = future.result()
+                                batch_results.append(result)
+                            except Exception as e:
+                                token_display = f"{token[:5]}...{token[-5:]}"
+                                log_error(f"处理token {token_display} 时发生异常: {str(e)}")
+                                batch_results.append({
+                                    "token": token_display,
+                                    "success": False,
+                                    "error": str(e),
+                                    "tasks_completed": []
+                                })
                     
-                    # 添加延迟前先检查token是否已达到扫雷游戏上限
-                    if token in max_games_reached_tokens:
-                        log_warning(f"跳过扫雷游戏 - 该token今日已达到最大游戏次数: {token_display}")
-                    else:
-                        # Add delay before minesweeper games
-                        task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
-                        log_info(f"Waiting {task_delay} seconds before minesweeper games...")
-                        countdown_timer(task_delay)
-                        
-                        # 执行扫雷游戏
-                        try:
-                            self.perform_minesweeper_games(token, proxies)
-                        except Exception as e:
-                            log_error(f"执行扫雷游戏时出错: {str(e)}")
-                        
-                        # 检查是否遇到了Max games reached错误
-                        if any("Max games reached for today" in str(e) for e in [
-                            # 捕获可能的"Max games reached"错误
-                            user_quests_data.get("error", "") if isinstance(user_quests_data, dict) else ""
-                        ]):
-                            max_games_reached_tokens.add(token)
-                            log_warning(f"已将token添加到达到最大游戏次数的列表: {token_display}")
+                    # 输出批次处理结果摘要
+                    successful_tokens = [r for r in batch_results if r["success"]]
+                    failed_tokens = [r for r in batch_results if not r["success"]]
+                    
+                    log_success(f"第 {batch_num + 1} 批处理完成:")
+                    log_success(f"  ✅ 成功: {len(successful_tokens)} 个token")
+                    if failed_tokens:
+                        log_warning(f"  ❌ 失败: {len(failed_tokens)} 个token")
+                        for failed in failed_tokens:
+                            log_warning(f"    - {failed['token']}: {failed['error']}")
+                    
+                    # 批次间添加延迟（除了最后一批）
+                    if batch_num < total_batches - 1:
+                        batch_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
+                        log_info(f"等待 {batch_delay} 秒后处理下一批token...")
+                        countdown_timer(batch_delay)
 
-                    # Task delay before processing next token
-                    task_delay = get_random_delay(MIN_TASK_DELAY, MAX_TASK_DELAY)
-                    log_info(f"Waiting {task_delay} seconds before processing next token")
-                    countdown_timer(task_delay)
-
-                # After processing all tokens, wait for next cycle (approximately 24 hours)
-                loop_delay = get_random_delay(MIN_LOOP_DELAY, MAX_LOOP_DELAY)
+                # 所有token处理完成后，等待下一个周期（大约24小时）
+                loop_delay = get_random_delay(LOOP_DELAY, LOOP_DELAY+30)
                 next_run = current_time + timedelta(seconds=loop_delay)
-                log_success(f"All accounts processed. Next automatic run at: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
-                log_success(f"Waiting for approximately {loop_delay//3600} hours, {(loop_delay%3600)//60} minutes before next cycle")
+                log_success(f"所有账户处理完成。下次自动运行时间: {next_run.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+                log_success(f"等待大约 {loop_delay//3600} 小时 {(loop_delay%3600)//60} 分钟后开始下一个周期")
                 countdown_timer(loop_delay)
 
             except KeyboardInterrupt:
-                log_warning("Keyboard interrupt detected. Stopping automation...")
+                log_warning("检测到键盘中断。停止自动化...")
                 # Save headers before exiting
                 self.api_client.save_headers()
                 # Update proxy file to remove used proxies
-                #íself.proxy_manager.update_proxy_file()
+                #self.proxy_manager.update_proxy_file()
                 break
             except Exception as e:
-                log_error(f"Unexpected error occurred: {str(e)}")
+                log_error(f"发生意外错误: {str(e)}")
                 import traceback
                 log_error(traceback.format_exc())
-                log_warning("Retrying in 10 seconds...")
+                log_warning("10秒后重试...")
                 time.sleep(10)
 
 if __name__ == "__main__":
@@ -1048,8 +1171,12 @@ if __name__ == "__main__":
     # rainbow_banner()
     
     print(f"\n{Fore.GREEN}{'=' * 70}")
-    print(f"{Fore.GREEN}🚀 Starting Magic Newton Automation v1.5")
+    print(f"{Fore.GREEN}🚀 Starting Magic Newton Automation v1.6 (并行处理版本)")
     print(f"{Fore.GREEN}{'=' * 70}\n")
     
-    automation = MagicNewtonAutomation()
+    # 可以通过环境变量或命令行参数设置并行token数量
+    max_parallel_tokens = int(os.environ.get('MAX_PARALLEL_TOKENS', 3))
+    log_info(f"设置最大并行token数量: {max_parallel_tokens}")
+    
+    automation = MagicNewtonAutomation(max_parallel_tokens=max_parallel_tokens)
     automation.run_automation()
